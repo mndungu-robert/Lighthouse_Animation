@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "ms-vscode.cpptools",
+    "ms-vscode.cmake-tools",
+    "slevesque.shader",
+    "eamodio.gitlens",
+    "usernamehw.errorlens"
+  ]
+}
