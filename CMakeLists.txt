@@ -1,26 +1,19 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.20)
+project(LighthouseScene LANGUAGES CXX)
 
-project(lighthouse LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(OpenGL REQUIRED)
-find_package(glad CONFIG REQUIRED)
+# Same libraries as Stage B1 (installed with: vcpkg install glfw3 glad glm stb)
 find_package(glfw3 CONFIG REQUIRED)
-find_package(glm CONFIG REQUIRED)
+find_package(glad  CONFIG REQUIRED)
+find_package(glm   CONFIG REQUIRED)
+find_path(STB_INCLUDE_DIRS "stb_image_write.h")
 
-add_executable(lighthouse
-    src/main.cpp
-)
-
-target_compile_features(lighthouse PRIVATE cxx_std_17)
-target_link_libraries(lighthouse PRIVATE
-    OpenGL::GL
-    glad::glad
-    glfw
-    glm::glm
-)
+add_executable(lighthouse src/main.cpp)
+target_include_directories(lighthouse PRIVATE src ${STB_INCLUDE_DIRS})
+target_link_libraries(lighthouse PRIVATE glfw glad::glad glm::glm)
 
 if(MSVC)
-    target_compile_options(lighthouse PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(lighthouse PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(lighthouse PRIVATE /utf-8 /W3)
 endif()

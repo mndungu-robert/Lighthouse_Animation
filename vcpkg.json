@@ -1,0 +1,10 @@
+{
+  "name": "lighthouse",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glad",
+    "glfw3",
+    "glm",
+    "stb"
+  ]
+}
