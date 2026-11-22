@@ -133,6 +133,40 @@ vec3 skyFull(vec3 d){
 }
 )GLSL";
 
+
+// ===========================================================================
+// BEAM: the rotating lighthouse beam (shared by scene, water and the volumetric pass)
+// Angle convention: dir = (cos a, 0, sin a); increasing a is CLOCKWISE seen from above.
+// ===========================================================================
+static const char* GLSL_BEAM = R"GLSL(
+uniform float uBeamAngle;
+uniform vec3  uLampPos;
+uniform float uBeamOn;           // 0 = lamp off, 1 = full
+const float BEAM_HALF = 0.115;   // half width in radians (~6.6 degrees, soft edge)
+
+float beamAz(vec3 p){
+    vec2 h = p.xz - uLampPos.xz;
+    float rho = length(h);
+    float c = dot(h/max(rho, 1e-3), vec2(cos(uBeamAngle), sin(uBeamAngle)));
+    return smoothstep(cos(BEAM_HALF), cos(BEAM_HALF*0.30), c);
+}
+float beamEl(vec3 p){
+    vec3 d = p - uLampPos;
+    float e = atan(d.y, max(length(d.xz), 1e-3));
+    return smoothstep(-1.15, -0.95, e)*(1.0 - smoothstep(-0.02, 0.06, e));   // wide downward fan: reaches the water, boat and island
+}
+float beamElVol(vec3 p){                                                   // narrower fan for the visible light shaft
+    vec3 d = p - uLampPos;
+    float e = atan(d.y, max(length(d.xz), 1e-3));
+    return smoothstep(-0.62, -0.42, e)*(1.0 - smoothstep(-0.02, 0.06, e));
+}
+float beamAtt(float dist){ return (1.0/(1.0 + dist*dist/(35.0*35.0)))*(1.0 - smoothstep(110.0, 210.0, dist)); }
+vec3 beamRadiance(vec3 p){
+    float dist = length(p - uLampPos);
+    return vec3(1.0, 0.88, 0.62)*28.0*beamAz(p)*beamEl(p)*beamAtt(dist)*uBeamOn;
+}
+)GLSL";
+
 // ===========================================================================
 // Island height (GLSL twin of islandHeight() in geometry.h)
 // ===========================================================================
@@ -336,8 +370,14 @@ void main(){
     else if(uMaterial == 1){ rough = 0.38; metal = 0.85; }          // dark metal
     else if(uMaterial == 2){                                         // glass
         albedo = vec3(0.015,0.02,0.03); rough = 0.04;
-        emis = vec3(1.0,0.72,0.32)*uEmissive*uLamp*(0.8+0.4*vnoise(vec2(vUV.x*40.0, vUV.y*3.0)));
+        float lens = 1.0;
+        if(uEmissive > 5.0){                                         // lantern: brightest where the beam points
+            vec2 hh = normalize(vWorld.xz - uLampPos.xz + vec2(1e-4));
+            lens = 0.25 + 1.6*pow(max(dot(hh, vec2(cos(uBeamAngle), sin(uBeamAngle))), 0.0), 8.0);
+        }
+        emis = vec3(1.0,0.72,0.32)*uEmissive*uLamp*lens*(0.8+0.4*vnoise(vec2(vUV.x*40.0, vUV.y*3.0)));
     }
+    else if(uMaterial == 8){ albedo = vec3(0.02); rough = 0.3; emis = vCol*uEmissive*uLamp; }   // nav lights
     else if(uMaterial == 3){ rough = 0.35; metal = 0.55; }          // roof
     else if(uMaterial == 4){                                         // ---- terrain ----
         float h = vWorld.y;
@@ -387,6 +427,12 @@ void main(){
     vec3 env = skyBase(vec3(R.x, max(R.y,0.0), R.z));
     vec3 Fr = F0 + (max(vec3(1.0-rough), F0) - F0)*pow(1.0-NdV, 5.0);
     col += env*Fr*ao*(1.0 - rough*0.6);
+    // the rotating beam as a spotlight on this surface
+    vec3 bR = beamRadiance(vWorld);
+    if(dot(bR, bR) > 1e-6){
+        vec3 Lb = normalize(uLampPos - vWorld);
+        col += pbr(albedo, rough, metal, N, V, Lb, bR);
+    }
     col += emis;
 
     float dist = length(uCamPos - vWorld);
@@ -420,6 +466,9 @@ uniform vec3  uLightDir;
 uniform vec3  uLightColor;
 uniform float uWaveAmp;
 uniform float uFogDensity;
+uniform vec2  uBoatPos;
+uniform vec2  uBoatFwd;
+uniform float uBoatSpeed;
 
 // sum of directional sine waves; returns the height gradient (d h / d xz)
 vec2 waveGrad(vec2 p, float t, float amp, float dist){
@@ -486,9 +535,32 @@ void main(){
     float pulse = 0.5 + 0.5*sin(depth*3.0 - uTime*1.2 + nf*4.0);
     float foam = smoothstep(0.45, 0.8, nf*0.7 + shore*0.6 + pulse*0.2*shore)
                * smoothstep(-0.2, 0.05, depth) * (1.0 - smoothstep(0.7, 1.4, depth));
-    vec3 foamC = (skyUp*0.7 + uLightColor*dayLight*0.12 + 0.04)*0.9;
+    // boat wake: turbulent centre + V-shaped edge waves, fading with distance behind the boat
+    vec2 rel = wp.xz - uBoatPos;
+    float lx = dot(rel, uBoatFwd);
+    float lz = dot(rel, vec2(-uBoatFwd.y, uBoatFwd.x));
+    float behind = -lx - 2.5;
+    float wake = 0.0;
+    if(behind > 0.0 && behind < 34.0){
+        float spread = 0.9 + behind*0.16;
+        float c = abs(lz);
+        float core = smoothstep(spread, 0.0, c);
+        float arms = smoothstep(0.35, 0.0, abs(c - spread*0.9))*0.8;
+        float fadeLen = 1.0 - behind/34.0;
+        float nz = fbm(wp.xz*2.2 + vec2(uTime*0.6, -uTime*0.4));
+        wake = (core*0.7 + arms)*fadeLen*smoothstep(0.35, 0.75, nz + 0.25)*clamp(uBoatSpeed*1.3, 0.0, 1.0);
+    }
+    foam = max(foam, wake);
+    vec3 bR = beamRadiance(wp);
+    vec3 foamC = (skyUp*0.7 + uLightColor*dayLight*0.12 + 0.04)*0.9 + bR*0.12;
 
-    vec3 col = bodyLit*(1.0-F) + refl*F + specC;
+    // lantern beam sweeping over the water: soft glow + a glittering streak
+    vec3 Lb = normalize(uLampPos - wp);
+    vec3 Hb = normalize(Lb + V);
+    float spb = pow(max(dot(N, Hb), 0.0), 220.0)*228.0/(8.0*3.14159);
+    vec3 beamWater = bR*0.012 + bR*min(spb, 25.0)*0.006*F;
+
+    vec3 col = bodyLit*(1.0-F) + refl*F + specC + beamWater;
     col = mix(col, foamC, foam*0.85);
     float alpha = max(smoothstep(0.0, 1.4, depth), foam);
 
@@ -576,5 +648,77 @@ void main(){
     col *= mix(0.72, 1.0, v);
     col += (hash12(gl_FragCoord.xy)-0.5)/255.0;     // dither: no banding in the sky gradient
     FragColor = vec4(col, 1.0);
+}
+)GLSL";
+
+// ===========================================================================
+// Volumetric beam: ray-march the light shaft through hazy air (additive pass).
+// The wedge-shaped beam is intersected analytically with each view ray, so the
+// marching only happens where there is actually light.
+// ===========================================================================
+static const char* BEAM_FS = R"GLSL(
+in vec2 vUv;
+out vec4 FragColor;
+uniform sampler2D uDepth;
+uniform mat4 uInvViewProj;
+uniform vec3 uCamPos;
+uniform float uTime;
+uniform float uHaze;
+
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+float hg(float c, float g){ float g2 = g*g; return (1.0-g2)/(12.566371*pow(1.0 + g2 - 2.0*g*c, 1.5)); }
+
+void main(){
+    FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    if(uBeamOn < 0.01) return;
+
+    float depth = texture(uDepth, vUv).r;
+    vec4 pw = uInvViewProj*vec4(vUv*2.0-1.0, depth*2.0-1.0, 1.0);
+    vec3 P = pw.xyz/pw.w;
+    vec3 ray = P - uCamPos;
+    float tScene = length(ray);
+    vec3 dir = ray/tScene;
+    if(depth >= 0.99999) tScene = 2000.0;
+
+    // horizontal wedge limits: points p with cross(e1,p) >= 0 and cross(p,e2) >= 0
+    vec2 o = uCamPos.xz - uLampPos.xz;
+    vec2 v = dir.xz;
+    float w = BEAM_HALF*1.7;
+    vec2 e1 = vec2(cos(uBeamAngle - w), sin(uBeamAngle - w));
+    vec2 e2 = vec2(cos(uBeamAngle + w), sin(uBeamAngle + w));
+    float a1 = e1.x*o.y - e1.y*o.x, b1 = e1.x*v.y - e1.y*v.x;
+    float a2 = o.x*e2.y - o.y*e2.x, b2 = v.x*e2.y - v.y*e2.x;
+    float t0 = 0.0, t1 = tScene;
+    if(abs(b1) < 1e-7){ if(a1 < 0.0) return; } else { float tt = -a1/b1; if(b1 > 0.0) t0 = max(t0, tt); else t1 = min(t1, tt); }
+    if(abs(b2) < 1e-7){ if(a2 < 0.0) return; } else { float tt = -a2/b2; if(b2 > 0.0) t0 = max(t0, tt); else t1 = min(t1, tt); }
+
+    // keep to a sphere of radius 320 m around the lamp
+    vec3 oc = uCamPos - uLampPos;
+    float bq = dot(oc, dir), cq = dot(oc, oc) - 320.0*320.0;
+    float disc = bq*bq - cq;
+    if(disc < 0.0) return;
+    float sq = sqrt(disc);
+    t0 = max(t0, -bq - sq);
+    t1 = min(t1, -bq + sq);
+    if(t1 <= t0) return;
+
+    const int N = 36;
+    float dt = (t1 - t0)/float(N);
+    float jit = hash12(gl_FragCoord.xy + fract(uTime)*17.0);
+    float acc = 0.0;
+    for(int i = 0; i < N; i++){
+        float t = t0 + (float(i) + jit)*dt;
+        vec3 p = uCamPos + dir*t;
+        float az = beamAz(p);
+        if(az <= 0.0) continue;
+        float el = beamElVol(p);
+        float dist = length(p - uLampPos);
+        vec3 ld = (p - uLampPos)/max(dist, 1e-3);
+        float cosT = dot(ld, -dir);
+        float phase = 0.15 + hg(cosT, 0.72);
+        float dens = uHaze*(0.45 + 0.9*exp(-max(p.y, 0.0)*0.04));
+        acc += az*el*beamAtt(dist)*dens*phase*dt;
+    }
+    FragColor = vec4(vec3(1.0, 0.88, 0.62)*28.0*uBeamOn*acc, 1.0);
 }
 )GLSL";
