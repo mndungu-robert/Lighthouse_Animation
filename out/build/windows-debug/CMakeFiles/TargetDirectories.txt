@@ -1,0 +1,3 @@
+C:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug/CMakeFiles/lighthouse.dir
+C:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug/CMakeFiles/ALL_BUILD.dir
+C:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug/CMakeFiles/ZERO_CHECK.dir

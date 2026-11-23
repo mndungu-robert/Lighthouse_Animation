@@ -1,0 +1,10 @@
+^C:\USERS\NATAL\SOURCE\REPOS\LIGHTHOUSE_ANIMATION\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/natal/source/repos/Lighthouse_Animation -BC:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug --check-stamp-file C:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
