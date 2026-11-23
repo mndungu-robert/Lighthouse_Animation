@@ -24,3 +24,17 @@ if(MSVC)
 else()
     target_compile_options(lighthouse PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+
+# Set the working directory to the project root
+set_target_properties(lighthouse PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+# Copy shaders next to the executable after building
+add_custom_command(TARGET lighthouse POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/shaders"
+        "$<TARGET_FILE_DIR:lighthouse>/shaders"
+    COMMENT "Copying shader files to the executable directory"
+)
