@@ -1,21 +1,92 @@
-# Lighthouse
+# Lighthouse Navigation Simulation
 
-A C++17 and OpenGL starter project for the lighthouse scene.
+A realistic 3D lighthouse simulation developed using C++17 and OpenGL.
 
-## Windows setup
+The scene consists of a lighthouse located on an island surrounded by a large water body. A boat approaches the shore while being guided by a rotating lighthouse beam. The environment includes realistic lighting, reflections, shadows, animated water, and a dynamic day-night cycle.
 
-1. Install CMake, Git, and either MSYS2 with MinGW-w64 or the Visual Studio
-   Build Tools with the **Desktop development with C++** workload.
-2. Install vcpkg and set the `VCPKG_ROOT` environment variable to its
-   installation directory, then restart VS Code so it can read the variable.
-3. Add the selected compiler tools to `PATH` (for MSYS2, this is typically
-   `C:\msys64\ucrt64\bin`).
-4. Open this folder in VS Code and install the recommended extensions.
-5. In CMake Tools, select a compiler kit and configure the project. The vcpkg
-   manifest installs GLFW, GLAD, GLM, and stb during configuration.
-6. Build and run the `lighthouse` target from the CMake Tools status bar.
+---
 
-The starter opens a GLFW window with an OpenGL 3.3 core context and a clear
-color. `shaders/basic.vert` and `shaders/basic.frag` are starting points for
-the rendering stages; shader loading and scene geometry are not implemented
-yet.
+## Preview
+
+### Sunset
+![Sunset](preview/B2_sunset.png)
+
+### Night
+![Night](preview/B2_night.png)
+
+### Lighthouse Beam Tracking Boat
+![Beam](preview/B3_boat_lit_by_beam.png)
+
+---
+
+## Features
+
+- Realistic lighthouse environment
+- Dynamic day and night cycle
+- Animated boat navigation and docking
+- Rotating lighthouse beam
+- Dynamic lighting and shadows
+- Water reflections and wave simulation
+- HDR rendering and bloom effects
+- Interactive camera controls
+- Wireframe rendering mode
+
+---
+
+## Built With
+
+- C++17
+- OpenGL 3.3
+- GLFW
+- GLAD
+- GLM
+- stb_image
+- CMake
+
+---
+
+## Running the Project
+
+### Requirements
+
+- Windows 10/11
+- OpenGL 3.3 compatible GPU
+- CMake 3.15+
+- C++17 compiler
+- Visual Studio Build Tools or MSYS2/MinGW
+
+### Build
+
+```bash
+cmake -B build
+cmake --build build
+```
+### Run
+
+```bash
+.\build\Debug\lighthouse.exe
+```
+
+Or launch the project directly through the VS Code CMake Tools extension.
+
+## Controls
+
+| Key | Action |
+|------|---------|
+| Mouse Drag | Rotate/Orbit Camera |
+| Scroll Wheel | Zoom In / Out |
+| W | Toggle Wireframe Mode |
+| 1 | Set Time to Dawn |
+| 2 | Set Time to Noon |
+| 3 | Set Time to Sunset |
+| 4 | Set Time to Night |
+| T | Toggle Automatic Day/Night Cycle |
+| Space | Pause / Resume Animation |
+| R | Restart Boat Animation |
+| F | Fast Forward Boat Movement |
+| C | Follow Boat Camera |
+| Z | Slow Lighthouse Beam Rotation |
+| X | Speed Up Lighthouse Beam Rotation |
+| L | Force Lighthouse Lamp On |
+| P | Save Screenshot |
+| ESC | Exit Application |
