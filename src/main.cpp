@@ -355,6 +355,10 @@ struct Item {
     bool castShadow;
 };
 
+static glm::vec3 getBoatPosition(float tod);
+static void updateBoatItems(std::vector<Item>& items, size_t firstBoatItem,
+                            float tod, float realTime);
+
 int main(int argc, char** argv) {
     int winW = 1600, winH = 900;
     std::string shotPath;
@@ -492,6 +496,8 @@ int main(int argc, char** argv) {
         if (glfwGetKey(win, GLFW_KEY_UP) == GLFW_PRESS) gPitch = std::min(1.35f, gPitch + 0.6f * dt);
         if (glfwGetKey(win, GLFW_KEY_DOWN) == GLFW_PRESS) gPitch = std::max(-0.2f, gPitch - 0.6f * dt);
         if (gAutoTime) gTime = std::fmod(gTime + dt * 0.5f, 24.0f);   // 1 game hour per 2 s
+
+        updateBoatItems(items, 5, gTime, (float)now);
 
         int W, H;
         glfwGetFramebufferSize(win, &W, &H);
@@ -685,4 +691,66 @@ int main(int argc, char** argv) {
     }
     glfwTerminate();
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 24-hour boat route
+// ---------------------------------------------------------------------------
+static glm::vec3 getBoatPosition(float tod) {
+    const float routeAngle = std::atan2(-26.0f, 20.0f);
+    const float horizonRadius = 72.0f;
+    const float eveningRadius = 23.5f;
+    const float finalNightRadius = 21.5f;
+    float radius;
+
+    if (tod >= 18.0f && tod < 21.0f) {
+        // Evening: sail inward from the horizon and stop close to the lighthouse.
+        float p = glm::smoothstep(18.0f, 21.0f, tod);
+        radius = glm::mix(horizonRadius, eveningRadius, p);
+    } else if (tod >= 21.0f && tod < 23.0f) {
+        // Early night: spend a short, deliberate phase approaching the shore,
+        // stopping in open water rather than reaching the island itself.
+        float p = glm::smoothstep(21.0f, 23.0f, tod);
+        radius = glm::mix(eveningRadius, finalNightRadius, p);
+    } else if (tod >= 23.0f || tod < 6.0f) {
+        // Remaining night: hold a safe offshore position.
+        radius = finalNightRadius;
+    } else {
+        // Sunrise through afternoon: steadily retreat toward the horizon.
+        float p = glm::smoothstep(6.0f, 18.0f, tod);
+        radius = glm::mix(finalNightRadius, horizonRadius, p);
+    }
+
+    return glm::vec3(radius * std::cos(routeAngle), 0.0f, radius * std::sin(routeAngle));
+}
+
+static void updateBoatItems(std::vector<Item>& items, size_t firstBoatItem,
+                            float tod, float realTime) {
+    glm::vec3 boatPos = getBoatPosition(tod);
+
+    // Match the boat's local +X axis to the direction of travel.
+    glm::vec3 tangent;
+    if (tod >= 18.0f && tod < 23.0f) {
+        tangent = -boatPos;                         // sail toward the lighthouse
+    } else if (tod >= 23.0f || tod < 6.0f) {
+        tangent = glm::normalize(glm::vec3(-boatPos.z, 0.0f, boatPos.x)); // gentle night drift
+    } else {
+        tangent = boatPos;                          // retreat toward the horizon
+    }
+    if (glm::length(tangent) > 0.001f) tangent = glm::normalize(tangent);
+
+    float boatYaw = std::atan2(tangent.z, tangent.x);
+    float bobY = std::sin(realTime * 1.7f) * 0.11f + 0.10f;
+    float pitchRock = std::sin(realTime * 1.25f) * 0.035f;
+    float rollRock = std::cos(realTime * 1.55f) * 0.055f;
+
+    glm::mat4 boatM = glm::translate(glm::mat4(1.0f), glm::vec3(boatPos.x, bobY, boatPos.z));
+    boatM = glm::rotate(boatM, boatYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+    boatM = glm::rotate(boatM, pitchRock, glm::vec3(1.0f, 0.0f, 0.0f));
+    boatM = glm::rotate(boatM, rollRock, glm::vec3(0.0f, 0.0f, 1.0f));
+
+    items[firstBoatItem].model = boatM;
+    items[firstBoatItem + 1].model = boatM;
+    items[firstBoatItem + 2].model = boatM;
+    items[firstBoatItem + 3].model = boatM;
 }
