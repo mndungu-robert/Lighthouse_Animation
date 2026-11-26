@@ -1,16 +1,20 @@
-// main.cpp  -  Lighthouse scene, Stage B2: photorealistic static look
+// main.cpp  -  Lighthouse scene, Stage B3: animation (boat + rotating beam)
 //
 // Render passes per frame:
 //   1. shadow map        (depth from the sun / moon)
 //   2. reflection        (scene mirrored in the water plane)
 //   3. main HDR pass     (sky -> PBR scene -> water), 4x MSAA
-//   4. bloom             (bright pixels blurred at 4 scales)
-//   5. tonemap + gamma   (ACES filmic) to the window
+//   4. light shaft       (ray-marched volumetric lighthouse beam, additive)
+//   5. bloom             (bright pixels blurred at 4 scales)
+//   6. tonemap + gamma   (ACES filmic) to the window
 //
-// Controls:  mouse drag / arrows = orbit   scroll or - = = zoom   W = wireframe
-//            1 dawn  2 noon  3 sunset  4 night   , . = change time   T = auto time
-//            [ ] = wave size   P = save screenshot (progress evidence)   Esc = quit
-// Command line (optional):  --shot out.png --time 17.7 --yaw 1.57 --pitch -0.09 --dist 82 --w 1600 --h 900
+// Controls:  mouse drag / arrows = orbit   scroll or - = = zoom   C = follow the boat
+//            Space = pause   R = restart boat   F = fast-forward boat (x4)
+//            Z / X = beam slower / faster   L = force lamp on (even in daylight)
+//            1 dawn  2 noon  3 sunset  4 night  5 dusk   , . = change time   T = auto time
+//            [ ] = wave size   W = wireframe   P = screenshot   Esc = quit
+// Command line (optional):  --shot out.png --time 18.6 --anim 60 --beam 0.0 --lamp
+//                           --yaw 1.57 --pitch -0.09 --dist 82 --w 1600 --h 900
 
 #if __has_include(<glad/gl.h>)
   #include <glad/gl.h>                       // glad 2.x
@@ -141,6 +145,7 @@ struct Targets {
     int w = 0, h = 0;
     GLuint msFbo = 0, msColor = 0, msDepth = 0;
     GLuint hdrFbo = 0, hdrTex = 0;
+    GLuint depthFbo = 0, depthTex = 0;      // resolved (single-sample) depth for the beam pass
     GLuint reflFbo = 0, reflTex = 0, reflDepth = 0;
     BloomLevel bloom[4];
     GLuint shadowFbo = 0, shadowTex = 0;
@@ -173,6 +178,8 @@ static void destroyScreenTargets(Targets& T) {
     if (T.msDepth) glDeleteRenderbuffers(1, &T.msDepth);
     if (T.hdrFbo) glDeleteFramebuffers(1, &T.hdrFbo);
     if (T.hdrTex) glDeleteTextures(1, &T.hdrTex);
+    if (T.depthFbo) glDeleteFramebuffers(1, &T.depthFbo);
+    if (T.depthTex) glDeleteTextures(1, &T.depthTex);
     if (T.reflFbo) glDeleteFramebuffers(1, &T.reflFbo);
     if (T.reflTex) glDeleteTextures(1, &T.reflTex);
     if (T.reflDepth) glDeleteRenderbuffers(1, &T.reflDepth);
@@ -183,7 +190,7 @@ static void destroyScreenTargets(Targets& T) {
         }
         b = BloomLevel();
     }
-    T.msFbo = T.msColor = T.msDepth = T.hdrFbo = T.hdrTex = T.reflFbo = T.reflTex = T.reflDepth = 0;
+    T.msFbo = T.msColor = T.msDepth = T.hdrFbo = T.hdrTex = T.depthFbo = T.depthTex = T.reflFbo = T.reflTex = T.reflDepth = 0;
 }
 
 static void createScreenTargets(Targets& T, int w, int h) {
@@ -202,7 +209,7 @@ static void createScreenTargets(Targets& T, int w, int h) {
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, T.msColor);
     glGenRenderbuffers(1, &T.msDepth);
     glBindRenderbuffer(GL_RENDERBUFFER, T.msDepth);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, w, h);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT32F, w, h);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, T.msDepth);
     checkFbo("msaa");
 
@@ -212,6 +219,21 @@ static void createScreenTargets(Targets& T, int w, int h) {
     T.hdrTex = makeTex(w, h, GL_RGBA16F, GL_RGBA, GL_FLOAT);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, T.hdrTex, 0);
     checkFbo("hdr");
+
+    // resolved depth (same format as the MSAA depth so the blit is legal)
+    glGenFramebuffers(1, &T.depthFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, T.depthFbo);
+    glGenTextures(1, &T.depthTex);
+    glBindTexture(GL_TEXTURE_2D, T.depthTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, w, h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, T.depthTex, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    checkFbo("depth");
 
     // planar reflection target
     glGenFramebuffers(1, &T.reflFbo);
@@ -264,11 +286,18 @@ static void createShadowTarget(Targets& T) {
 // Application state
 // ---------------------------------------------------------------------------
 static float gYaw = 1.5708f, gPitch = -0.09f, gDist = 82.0f;
-static float gTime = 17.7f;           // hour of day, 0..24
+static float gTime = 18.6f;           // hour of day, 0..24 (18.6 = dusk, lantern already lit)
 static bool  gAutoTime = false;
 static float gWaveAmp = 0.15f;
 static bool  gWire = false;
 static bool  gShotRequested = false;
+static float gAnimT = 0.0f;           // animation clock in seconds (drives the boat)
+static bool  gPaused = false;
+static bool  gFast = false;
+static float gBeamAngle = 0.0f;       // radians; increasing = clockwise seen from above
+static float gBeamPeriod = 8.0f;      // seconds per full rotation
+static bool  gForceLamp = false;
+static bool  gFollow = false;
 static bool  gDrag = false;
 static double gLastX = 0, gLastY = 0;
 
@@ -280,6 +309,14 @@ static void onKey(GLFWwindow* w, int key, int, int action, int) {
         case GLFW_KEY_W: if (press) gWire = !gWire; break;
         case GLFW_KEY_T: if (press) gAutoTime = !gAutoTime; break;
         case GLFW_KEY_P: if (press) gShotRequested = true; break;
+        case GLFW_KEY_SPACE: if (press) gPaused = !gPaused; break;
+        case GLFW_KEY_R: if (press) gAnimT = 0.0f; break;
+        case GLFW_KEY_F: if (press) gFast = !gFast; break;
+        case GLFW_KEY_L: if (press) gForceLamp = !gForceLamp; break;
+        case GLFW_KEY_C: if (press) { gFollow = !gFollow; gDist = gFollow ? 32.0f : 82.0f; } break;
+        case GLFW_KEY_Z: gBeamPeriod = std::min(30.0f, gBeamPeriod * 1.05f); break;
+        case GLFW_KEY_X: gBeamPeriod = std::max(2.0f, gBeamPeriod / 1.05f); break;
+        case GLFW_KEY_5: gTime = 18.6f; break;
         case GLFW_KEY_1: gTime = 6.2f; break;
         case GLFW_KEY_2: gTime = 12.0f; break;
         case GLFW_KEY_3: gTime = 17.7f; break;
@@ -347,6 +384,46 @@ static Lighting computeLighting(float tod) {
 // ---------------------------------------------------------------------------
 // Scene description
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Boat path: a quadratic Bezier from far out at sea to a berth beside the jetty.
+// The boat cruises, slows down for the last 25% of the trip, docks, waits, repeats.
+// ---------------------------------------------------------------------------
+struct BoatPath {
+    glm::vec2 P0, P1, P2;
+    float sailTime = 80.0f, waitTime = 14.0f;
+};
+
+struct BoatPose {
+    glm::vec3 pos;
+    float yaw;       // rotation about Y (boat +X = bow)
+    float speed;     // m/s, drives the wake
+    glm::vec2 fwd;   // world-space heading (x,z)
+};
+
+static BoatPose boatPoseAt(const BoatPath& bp, float animT) {
+    float total = bp.sailTime + bp.waitTime;
+    float cyc = std::fmod(animT, total);
+    float x = std::clamp(cyc / bp.sailTime, 0.0f, 1.0f);
+    float posF, spdF;
+    if (x <= 0.75f) { posF = x; spdF = 1.0f; }
+    else {
+        float d = x - 0.75f;
+        posF = 0.75f + d - d * d / 0.5f;
+        spdF = 1.0f - d / 0.25f;
+    }
+    float u = posF / 0.875f;
+    float us = spdF / 0.875f;
+    glm::vec2 P = (1 - u) * (1 - u) * bp.P0 + 2 * (1 - u) * u * bp.P1 + u * u * bp.P2;
+    glm::vec2 dP = 2.0f * (1 - u) * (bp.P1 - bp.P0) + 2.0f * u * (bp.P2 - bp.P1);
+    glm::vec2 fwd = glm::normalize(dP);
+    BoatPose r;
+    r.pos = glm::vec3(P.x, 0.0f, P.y);
+    r.yaw = std::atan2(-fwd.y, fwd.x);
+    r.speed = glm::length(dP) * us / bp.sailTime;
+    r.fwd = fwd;
+    return r;
+}
+
 struct Item {
     Mesh* mesh;
     glm::mat4 model;
@@ -370,6 +447,9 @@ int main(int argc, char** argv) {
         else if (a == "--w" && i + 1 < argc) winW = std::atoi(argv[++i]);
         else if (a == "--h" && i + 1 < argc) winH = std::atoi(argv[++i]);
         else if (a == "--wave") next(gWaveAmp);
+        else if (a == "--anim") next(gAnimT);
+        else if (a == "--beam") next(gBeamAngle);
+        else if (a == "--lamp") gForceLamp = true;
         else if (a == "--wire") gWire = true;
     }
     bool headless = !shotPath.empty();
@@ -398,21 +478,26 @@ int main(int argc, char** argv) {
     const std::string V = GLSL_VERSION;
     Program pSky    = makeProgram(V + SKY_VS, V + GLSL_COMMON + SKY_FS, "sky");
     Program pShadow = makeProgram(V + SHADOW_VS, V + SHADOW_FS, "shadow");
-    Program pScene  = makeProgram(V + SCENE_VS, V + GLSL_COMMON + SCENE_FS, "scene");
-    Program pWater  = makeProgram(V + WATER_VS, V + GLSL_COMMON + GLSL_ISLAND + WATER_FS, "water");
+    Program pScene  = makeProgram(V + SCENE_VS, V + GLSL_COMMON + GLSL_BEAM + SCENE_FS, "scene");
+    Program pWater  = makeProgram(V + WATER_VS, V + GLSL_COMMON + GLSL_BEAM + GLSL_ISLAND + WATER_FS, "water");
+    Program pBeam   = makeProgram(V + POST_VS, V + GLSL_BEAM + BEAM_FS, "beam");
     Program pExtract = makeProgram(V + POST_VS, V + EXTRACT_FS, "extract");
     Program pCopy    = makeProgram(V + POST_VS, V + COPY_FS, "copy");
     Program pBlur    = makeProgram(V + POST_VS, V + BLUR_FS, "blur");
     Program pComp    = makeProgram(V + POST_VS, V + COMPOSITE_FS, "composite");
 
     // ---- geometry ----
-    Mesh terrain, towerM, metalM, glassM, roofM, boatBody, boatCabin, boatGlass, person, waterQuad;
+    Mesh terrain, towerM, metalM, glassM, roofM, boatBody, boatCabin, boatGlass, boatLights, person, waterQuad, jettyDeck, jettyPosts;
     std::vector<Mesh> rocks(3);
     terrain.upload(makeTerrain());
     LighthouseMeshes lh = makeLighthouse();
     towerM.upload(lh.tower); metalM.upload(lh.metal); glassM.upload(lh.glass); roofM.upload(lh.roof);
     BoatMeshes bt = makeBoat();
     boatBody.upload(bt.body); boatCabin.upload(bt.cabin); boatGlass.upload(bt.glass); person.upload(bt.person);
+    boatLights.upload(bt.lights);
+    const float jettyAngle = -0.45f;
+    JettyMeshes jt = makeJetty(jettyAngle);
+    jettyDeck.upload(jt.deck); jettyPosts.upload(jt.posts);
     for (int k = 0; k < 3; ++k) rocks[k].upload(makeRock(3.1f + 7.7f * k));
     {
         MeshData q;
@@ -432,22 +517,32 @@ int main(int argc, char** argv) {
     items.push_back({&glassM, I, 2, 7.0f, true});
     items.push_back({&roofM, I, 3, 0, true});
 
-    // boat: heading toward the island, 33 m out
-    glm::vec3 boatPos(20.0f, 0.0f, -26.0f);
-    glm::vec3 toIsland = glm::normalize(glm::vec3(-boatPos.x, 0, -boatPos.z));
-    float boatYaw = std::atan2(-toIsland.z, toIsland.x);
-    glm::mat4 boatM = glm::translate(I, boatPos) * glm::rotate(I, boatYaw, glm::vec3(0, 1, 0));
-    items.push_back({&boatBody, boatM, 6, 0, true});
-    items.push_back({&boatCabin, boatM, 7, 0, true});
-    items.push_back({&boatGlass, boatM, 2, 1.6f, true});
-    items.push_back({&person, boatM, 7, 0, true});
+    // jetty
+    items.push_back({&jettyDeck, I, 6, 0, true});
+    items.push_back({&jettyPosts, I, 7, 0, true});
+
+    // boat: berth alongside the seaward end of the jetty, approach path from the open sea
+    glm::vec2 jdir = jt.dir, jperp(-jt.dir.y, jt.dir.x);
+    BoatPath path;
+    path.P2 = jdir * (jt.rEnd - 2.5f) - jperp * 2.1f;      // berth
+    path.P1 = path.P2 + jdir * 28.0f;                       // final approach runs shoreward along the jetty
+    path.P0 = glm::vec2(5.0f, -95.0f);                      // far out to the right of the view
+    int boatFirst = (int)items.size();
+    items.push_back({&boatBody, I, 6, 0, true});
+    items.push_back({&boatCabin, I, 7, 0, true});
+    items.push_back({&boatGlass, I, 2, 1.6f, true});
+    items.push_back({&boatLights, I, 8, 14.0f, true});
+    items.push_back({&person, I, 7, 0, true});
+    int boatLast = (int)items.size();
 
     // rocks scattered along the shoreline
     {
         uint32_t seed = 12345;
         auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return (seed >> 8) / 16777216.0f; };
-        for (int k = 0; k < 20; ++k) {
+        for (int k = 0; k < 24; ++k) {
             float a = rnd() * kTwoPi;
+            float da = std::atan2(std::sin(a - jettyAngle), std::cos(a - jettyAngle));
+            if (std::fabs(da) < 0.30f) continue;
             float r = 8.0f;
             while (islandHeight(r * std::cos(a), r * std::sin(a)) > 0.3f && r < 60.0f) r += 0.1f;
             r += (rnd() - 0.5f) * 3.0f;
@@ -492,6 +587,11 @@ int main(int argc, char** argv) {
         if (glfwGetKey(win, GLFW_KEY_UP) == GLFW_PRESS) gPitch = std::min(1.35f, gPitch + 0.6f * dt);
         if (glfwGetKey(win, GLFW_KEY_DOWN) == GLFW_PRESS) gPitch = std::max(-0.2f, gPitch - 0.6f * dt);
         if (gAutoTime) gTime = std::fmod(gTime + dt * 0.5f, 24.0f);   // 1 game hour per 2 s
+        if (!gPaused && !headless) {
+            gAnimT += dt * (gFast ? 4.0f : 1.0f);
+            gBeamAngle += dt * kTwoPi / gBeamPeriod;               // clockwise seen from above
+            if (gBeamAngle > kTwoPi) gBeamAngle -= kTwoPi;
+        }
 
         int W, H;
         glfwGetFramebufferSize(win, &W, &H);
@@ -500,9 +600,27 @@ int main(int argc, char** argv) {
 
         float time = fixedTime >= 0 ? fixedTime : (float)now;
         Lighting Lt = computeLighting(gTime);
+        float lampOn = gForceLamp ? 1.0f : Lt.lamp;
+        Lt.lamp = lampOn;
+
+        // ---- animate the boat ----
+        BoatPose bp = boatPoseAt(path, gAnimT);
+        {
+            float t = gAnimT;
+            float heave = 0.05f * std::sin(1.1f * t) + 0.03f * std::sin(1.9f * t + 1.0f);
+            float roll = 0.035f * std::sin(0.9f * t + 0.5f);
+            float pitch = 0.025f * std::sin(1.3f * t);
+            glm::mat4 bm = glm::translate(I, bp.pos + glm::vec3(0, heave, 0)) *
+                           glm::rotate(I, bp.yaw, glm::vec3(0, 1, 0)) *
+                           glm::rotate(I, roll, glm::vec3(1, 0, 0)) *
+                           glm::rotate(I, pitch, glm::vec3(0, 0, 1));
+            for (int k = boatFirst; k < boatLast; ++k) items[k].model = bm;
+        }
+        glm::vec3 lampPos(0.0f, lh.lampY, 0.0f);
+        if (headless && frames == 0) std::printf("boat x=%.2f z=%.2f azimuth=%.3f rad\n", bp.pos.x, bp.pos.z, std::atan2(bp.pos.z, bp.pos.x));
 
         // ---- camera ----
-        glm::vec3 target(0.0f, 11.0f, 0.0f);
+        glm::vec3 target = gFollow ? bp.pos + glm::vec3(0, 2.0f, 0) : glm::vec3(0.0f, 11.0f, 0.0f);
         glm::vec3 camPos = target + gDist * glm::vec3(std::cos(gPitch) * std::sin(gYaw), std::sin(gPitch),
                                                       std::cos(gPitch) * std::cos(gYaw));
         camPos.y = std::max(camPos.y, 1.0f);
@@ -551,6 +669,9 @@ int main(int argc, char** argv) {
             pScene.f1("uLamp", Lt.lamp);
             pScene.f1("uFogDensity", 0.0009f);
             pScene.i1("uShadowMap", 0);
+            pScene.f1("uBeamAngle", gBeamAngle);
+            pScene.f3("uLampPos", lampPos);
+            pScene.f1("uBeamOn", lampOn);
         };
         auto drawSky = [&](const glm::mat4& vp, const glm::vec3& cp) {
             pSky.use();
@@ -605,6 +726,12 @@ int main(int argc, char** argv) {
         pWater.f1("uWaveAmp", gWaveAmp);
         pWater.f1("uFogDensity", 0.0009f);
         pWater.i1("uReflection", 1);
+        pWater.f1("uBeamAngle", gBeamAngle);
+        pWater.f3("uLampPos", lampPos);
+        pWater.f1("uBeamOn", lampOn);
+        pWater.f2("uBoatPos", glm::vec2(bp.pos.x, bp.pos.z));
+        pWater.f2("uBoatFwd", bp.fwd);
+        pWater.f1("uBoatSpeed", bp.speed);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, T.reflTex);
         waterQuad.draw();
@@ -616,8 +743,33 @@ int main(int argc, char** argv) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, T.msFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, T.hdrFbo);
         glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, T.depthFbo);
+        glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 
-        // ================= 4. bloom =================
+        // ================= 4. volumetric light shaft (additive onto the HDR image) =================
+        if (lampOn > 0.01f) {
+            glBindFramebuffer(GL_FRAMEBUFFER, T.hdrFbo);
+            glViewport(0, 0, W, H);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            pBeam.use();
+            pBeam.m4("uInvViewProj", glm::inverse(viewProj));
+            pBeam.f3("uCamPos", camPos);
+            pBeam.f1("uTime", time);
+            pBeam.f1("uHaze", 0.002f);
+            pBeam.f1("uBeamAngle", gBeamAngle);
+            pBeam.f3("uLampPos", lampPos);
+            pBeam.f1("uBeamOn", lampOn);
+            pBeam.i1("uDepth", 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, T.depthTex);
+            fullscreen();
+            glDisable(GL_BLEND);
+        }
+
+        // ================= 5. bloom =================
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
         glActiveTexture(GL_TEXTURE0);
@@ -649,7 +801,7 @@ int main(int argc, char** argv) {
             fullscreen();
         }
 
-        // ================= 5. tonemap + gamma to the window =================
+        // ================= 6. tonemap + gamma to the window =================
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, W, H);
         pComp.use();

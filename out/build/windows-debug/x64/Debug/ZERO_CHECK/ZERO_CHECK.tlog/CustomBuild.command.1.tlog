@@ -1,0 +1,10 @@
+^C:\USERS\NATAL\SOURCE\REPOS\LIGHTHOUSE_ANIMATION\OUT\BUILD\WINDOWS-DEBUG\CMAKEFILES\1910127B1F3A95FC0BEEC12B629AC463\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/natal/source/repos/Lighthouse_Animation -BC:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/natal/source/repos/Lighthouse_Animation/out/build/windows-debug/LighthouseScene.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

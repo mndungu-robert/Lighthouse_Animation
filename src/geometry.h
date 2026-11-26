@@ -386,6 +386,7 @@ struct BoatMeshes {
     MeshData cabin;   // material 7: painted parts
     MeshData glass;   // material 2: windows
     MeshData person;  // material 7
+    MeshData lights;  // material 8: navigation lights (emissive at night)
     float deckY = 0.85f;
 };
 
@@ -449,6 +450,11 @@ inline BoatMeshes makeBoat() {
     for (float zs : {-1.0f, 1.0f})
         addBox(B.glass, {0.45f, 0.26f, 0.012f}, glm::vec3(0.9f), Tm(-0.7f, deckY + 1.15f, zs * 0.801f));
 
+    // navigation lights: red = port (-Z), green = starboard (+Z), white masthead
+    addEllipsoid(B.lights, glm::vec3(0.07f), 10, 8, glm::vec3(1.0f, 0.05f, 0.03f), Tm(0.2f, deckY + 1.97f, -0.88f));
+    addEllipsoid(B.lights, glm::vec3(0.07f), 10, 8, glm::vec3(0.05f, 1.0f, 0.15f), Tm(0.2f, deckY + 1.97f, 0.88f));
+    addEllipsoid(B.lights, glm::vec3(0.07f), 10, 8, glm::vec3(1.0f, 0.95f, 0.85f), Tm(-1.2f, deckY + 3.95f, 0.0f));
+
     // person (standing near the bow, waving)
     const glm::vec3 jacket(0.95f, 0.70f, 0.06f), trousers(0.08f, 0.10f, 0.18f),
         skin(0.55f, 0.37f, 0.26f), boots(0.03f), hat(0.05f, 0.07f, 0.15f);
@@ -465,4 +471,48 @@ inline BoatMeshes makeBoat() {
     addEllipsoid(B.person, {0.10f, 0.12f, 0.10f}, 16, 12, skin, P * Tm(0, 1.62f, 0));
     addEllipsoid(B.person, {0.115f, 0.07f, 0.115f}, 16, 8, hat, P * Tm(0, 1.70f, 0));
     return B;
+}
+
+// ---------------------------------------------------------------------------
+// Jetty (wooden pier) on the shore at polar angle `angle` (radians, atan2(z,x)).
+// The boat docks alongside its seaward end.
+// ---------------------------------------------------------------------------
+struct JettyMeshes {
+    MeshData deck;    // material 6
+    MeshData posts;   // material 7
+    glm::vec2 dir{1, 0};   // unit vector pointing out to sea (x,z)
+    float rShore = 0, rEnd = 0;
+};
+
+inline JettyMeshes makeJetty(float angle) {
+    JettyMeshes J;
+    J.dir = glm::vec2(std::cos(angle), std::sin(angle));
+    auto h = [&](float r) { return islandHeight(r * J.dir.x, r * J.dir.y); };
+    float rShore = 10.0f;
+    while (h(rShore) > 0.3f && rShore < 60.0f) rShore += 0.05f;
+    float deckY = 0.95f;
+    float rStart = rShore;
+    while (h(rStart) < deckY && rStart > 2.0f) rStart -= 0.05f;
+    float rEnd = rShore + 10.0f;
+    J.rShore = rShore; J.rEnd = rEnd;
+
+    float th = std::atan2(-J.dir.y, J.dir.x);
+    float rMid = 0.5f * (rStart + rEnd), len = rEnd - rStart;
+    glm::mat4 D = glm::translate(glm::mat4(1.0f), glm::vec3(rMid * J.dir.x, deckY - 0.06f, rMid * J.dir.y)) *
+                  glm::rotate(glm::mat4(1.0f), th, glm::vec3(0, 1, 0));
+    addBox(J.deck, glm::vec3(len * 0.5f, 0.06f, 1.05f), glm::vec3(0.40f, 0.28f, 0.17f), D);
+    // under-beams
+    for (float s : {-0.8f, 0.8f}) {
+        glm::mat4 Bm = D * glm::translate(glm::mat4(1.0f), glm::vec3(0, -0.2f, s));
+        addBox(J.deck, glm::vec3(len * 0.5f, 0.1f, 0.08f), glm::vec3(0.22f, 0.15f, 0.09f), Bm);
+    }
+    // posts
+    for (float r = rShore + 0.4f; r <= rEnd - 0.1f; r += 2.4f) {
+        for (float s : {-0.95f, 0.95f}) {
+            glm::vec2 p = J.dir * r + glm::vec2(-J.dir.y, J.dir.x) * s;
+            addCylinder(J.posts, 0.12f, 0.12f, deckY + 0.35f + 4.0f, 8, glm::vec3(0.20f, 0.14f, 0.09f),
+                        glm::translate(glm::mat4(1.0f), glm::vec3(p.x, -4.0f, p.y)), false);
+        }
+    }
+    return J;
 }
